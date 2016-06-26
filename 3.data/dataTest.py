@@ -7,8 +7,8 @@ import matplotlib
 import pylab
 import numpy as np
 
-def datatest():
-    conf = SparkConf().setAppName("test")
+def userDatatest():
+    conf = SparkConf().setAppName("userTest")
     sc = SparkContext(conf=conf)
     userFileName = "/home/zhb/Desktop/work/SparkData/ml-100k/u.user"
     user_data = sc.textFile(userFileName)
@@ -56,5 +56,33 @@ def datatest():
     print "countByValue Approach:"
     print dict(count_by_occupation2)
 
+# 探索电影数据 #
+def moiveDataTest():
+    conf = SparkConf().setAppName("moiveTest")
+    sc = SparkContext(conf=conf)
+    moiveFileName = "/home/zhb/Desktop/work/SparkData/ml-100k/u.item"
+    moive_data = sc.textFile(moiveFileName)
+    print moive_data.first()
+    num_moives = moive_data.count()
+    print "Moives:%d" % num_moives
+
+    # 数据转换
+    def convert_year(x):
+        try:
+            return int(x[-4:])
+        except:
+            return 1900#若数据缺失年份，将其年份设置为1900,在后续处理中会过滤掉这类数据
+
+    moive_fields = moive_data.map(lambda lines:lines.split("|"))
+    years = moive_fields.map(lambda fields:fields[2]).map(lambda x:convert_year(x))
+    years_filtered = years.filter(lambda x:x != 1900)
+
+    moive_ages = years_filtered.map(lambda yr:1998-yr).countByValue()
+    values = moive_ages.values()
+    bins = moive_ages.keys()
+    pylab.hist(values, bins = bins, color = 'lightblue', normed = True)
+    fig = matplotlib.pyplot.gcf()
+    fig.set_size_inches(16,10)
+
 if __name__ == "__main__":
-    datatest()
+    moiveDataTest()
