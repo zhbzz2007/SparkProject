@@ -29,3 +29,11 @@ val itemFileName = "/home/zhb/Desktop/work/SparkData/ml-100k/u.item"
 val moives = sc.textFile(itemFileName)
 val titles = moives.map(line => line.split("\\|").take(2)).map(array => (array(0).toInt,array(1))).collectAsMap()
 titles(123)
+
+// 用keyBy函数来从ratings RDD来创建一个键值对RDD，主键为用户ID，然后利用lookup函数来只返回给定键值对对应的那些评级数据到驱动程序
+val moivesForUser = ratings.keyBy(_.user).lookup(789)
+println(moivesForUser.size)
+
+moivesForUser.sortBy(-_.rating).take(10).map(rating => (titles(rating.product),rating.rating)).foreach(println)
+
+topKRecs.map(rating => (titles(rating.product),rating.rating)).foreach(println)
