@@ -113,7 +113,7 @@ def squared_log_error(pred,actual):
 # 线性模型
 mse = true_vs_predicted.map(lambda (t,p) : squared_error(t,p)).mean()
 mae = true_vs_predicted.map(lambda (t,p) : abs_error(t,p)).mean()
-rmsle = true_vs_predicted.map(lambda (t,p) : squared_log_error(t,p)).mean()
+rmsle = np.sqrt(true_vs_predicted.map(lambda (t,p) : squared_log_error(t,p)).mean())
 
 print "Linear Model - Mean Squared Error: %2.4f" % mse
 print "Linear Model - Mean Absolute Error: %2.4f" % mae
@@ -123,10 +123,168 @@ print "Linear Model - Root Mean Squared Error: %2.4f" % rmsle
 
 mse_dt = true_vs_predicted_dt.map(lambda (t,p) : squared_error(t,p)).mean()
 mae_dt = true_vs_predicted_dt.map(lambda (t,p) : abs_error(t,p)).mean()
-rmsle_dt = true_vs_predicted_dt.map(lambda (t,p) : squared_log_error(t,p)).mean()
+rmsle_dt = np.sqrt(true_vs_predicted_dt.map(lambda (t,p) : squared_log_error(t,p)).mean())
 
 print "Decision Tree - Mean Squared Error: %2.4f" % mse_dt
 print "Decision Tree - Mean Absolute Error: %2.4f" % mae_dt
 print "Decision Tree - Root Mean Squared Error: %2.4f" % rmsle_dt
 
 # 4.改进模型性能和参数调优
+import matplotlib.pyplot as plt
+import pylab
+
+# 4.1 变换目标变量
+targets = records.map(lambda r:float(r[-1])).collect()
+pylab.hist(targets,bins=40,color = 'lightblue',normed = True)
+fig = matplotlib.pyplot.gcf()
+fig.set_size_inches(16,10)
+
+log_targets = records.map(lambda r:np.log(float(r[-1]))).collect()
+pylab.hist(log_targets,bins = 40,color = 'lightblue',normed = True)
+fig = matplotlib.pyplot.gcf()
+fig.set_size_inches(16,10)
+
+sqrt_targets = records.map(lambda r:np.sqrt(float(r[-1]))).collect()
+pylab.hist(sqrt_targets,bins = 40,color = 'lightblue',normed = True)
+fig = matplotlib.pyplot.gcf()
+fig.set_size_inches(16,10)
+
+# 考察线性模型中对数变换的影响
+data_log = data.map(lambda lp:LabeledPoint(np.log(lp.label),lp.features))
+model_log = LinearRegressionWithSGD.train(data_log,iterations = 10,step = 0.1)
+true_vs_predicted_log = data_log.map(lambda p: (np.exp(p.label),np.exp(model_log.predict(p.features))))
+# 计算模型的MSE、MAE、RMSLE
+mse_log = true_vs_predicted_log.map(lambda (t,p) : squared_error(t,p)).mean()
+mae_log = true_vs_predicted_log.map(lambda (t,p) : abs_error(t,p)).mean()
+rmsle_log = np.sqrt(true_vs_predicted_log.map(lambda (t,p) : squared_log_error(t,p)).mean())
+
+print "Mean Squared Error: %2.4f" % mse_log
+print "Mean Absolute Error: %2.4f" % mae_log
+print "Root Mean Squared Error: %2.4f" % rmsle_log
+print "Non log-transformed predictions:\n" + str(true_vs_predicted.take(3))
+print "Log-transformed predictions:\n" + str(true_vs_predicted_log.take(3))
+
+# 决策树
+data_dt_log = data_dt.map(lambda lp:LabeledPoint(np.log(lp.label),lp.features))
+dt_model_log = DecisionTree.trainRegressor(data_dt_log,{})
+
+preds_log = dt_model_log.predict(data_dt_log.map(lambda p:p.features))
+actual_log = data_dt_log.map(lambda p:p.label)
+true_vs_predicted_dt_log = actual_log.zip(preds_log).map(lambda (t,p):(np.exp(t),np.exp(p)))
+
+# 计算模型的MSE、MAE、RMSLE
+mse_log_dt = true_vs_predicted_dt_log.map(lambda (t,p) : squared_error(t,p)).mean()
+mae_log_dt = true_vs_predicted_dt_log.map(lambda (t,p) : abs_error(t,p)).mean()
+rmsle_log_dt = np.sqrt(true_vs_predicted_dt_log.map(lambda (t,p) : squared_log_error(t,p)).mean())
+
+print "Mean Squared Error: %2.4f" % mse_log_dt
+print "Mean Absolute Error: %2.4f" % mae_log_dt
+print "Root Mean Squared Error: %2.4f" % rmsle_log_dt
+print "Non log-transformed predictions:\n" + str(true_vs_predicted_dt.take(3))
+print "Log-transformed predictions:\n" + str(true_vs_predicted_dt_log.take(3))
+
+# 4.2模型参数调优
+data_with_idx = data.zipWithIndex().map(lambda (k,v):(v,k))
+test = data_with_idx.sample(False,0.2,42)
+train = data_with_idx.subtractByKey(test)
+
+train_data = train.map(lambda (idx,p):p)
+test_data = test.map(lambda (idx,p):p)
+num_size = data.count()
+train_size = train_data.count()
+test_size = test_data.count()
+print "Training data size: %d" % train_size
+print "Test data size : %d" % test_size
+print "Total data size : %d" % num_size
+print "Train + Test size : %d" % (train_size + test_size)
+
+# 提取决策树所需特征
+data_with_idx_dt = data_dt.zipWithIndex().map(lambda (k,v):(v,k))
+test_dt = data_with_idx_dt.sample(False,0.2,42)
+train_dt = data_with_idx_dt.subtractByKey(test_dt)
+train_data_dt = train_dt.map(lambda (idx,p):p)
+test_data_dt = test_dt.map(lambda (idx,p):p)
+
+# 评估函数
+def evaluate(train,test,iterations,step,regParam,regType,intercept) :
+    model = LinearRegressionWithSGD.train(train,iterations,step,regParam = regParam,regType = regType,intercept = intercept)
+    tp = test.map(lambda p:(p.label,model.predict(p.features)))
+    rmsle = np.sqrt(tp.map(lambda (t,p):squared_log_error(t,p)).mean())
+    return rmsle
+
+# 线性模型
+# 迭代
+params = [1,5,10,20,50,100]
+metrics = [evaluate(train_data,test_data,param,0.01,0.0,'l2',False) for param in params]
+print params
+print metrics
+pylab.plot(params,metrics)
+fig = matplotlib.pyplot.gcf()
+matplotlib.pyplot.xscale('log')
+
+# 步长
+params = [0.01,0.025,0.05,0.1,1.0]
+metrics = [evaluate(train_data,test_data,10,param,0.0,'l2',False) for param in params]
+print params
+print metrics
+
+# L2正则化
+params = [0.0,0.01,0.1,1.0,5.0,10.0,20.0]
+metrics = [evaluate(train_data,test_data,10,0.1,param,'l2',False) for param in params]
+print params
+print metrics
+pylab.plot(params,metrics)
+fig = matplotlib.pyplot.gcf()
+matplotlib.pyplot.xscale('log')
+
+# L1正则化
+params = [0.0,0.01,0.1,1.0,10.0,100.0,1000.0]
+metrics = [evaluate(train_data,test_data,10,0.1,param,'l1',False) for param in params]
+print params
+print metrics
+pylab.plot(params,metrics)
+fig = matplotlib.pyplot.gcf()
+matplotlib.pyplot.xscale('log')
+
+model_l1 = LinearRegressionWithSGD.train(train_data,10,0.1,regParam = 1.0,regType = 'l1',intercept = False)
+model_l10 = LinearRegressionWithSGD.train(train_data,10,0.1,regParam = 10.0,regType = 'l1',intercept = False)
+model_l100 = LinearRegressionWithSGD.train(train_data,10,0.1,regParam = 100.0,regType = 'l1',intercept = False)
+print "L1 (1.0) number of zeros weights: " + str(sum(model_l1.weights.array == 0))
+print "L1 (10.0) number of zeros weights: " + str(sum(model_l10.weights.array == 0))
+print "L1 (100.0) number of zeros weights: " + str(sum(model_l100.weights.array == 0))
+
+# 截距
+params = [False,True]
+metrics = [evaluate(train_data,test_data,10,0.1,1.0,'l2',param) for param in params]
+print params
+print metrics
+matplotlib.pyplot.bar(params,metrics,color = "lightblue")
+fig = matplotlib.pyplot.gcf()
+
+# 决策树
+# 评估函数
+def evaluate_dt(train,test,maxDepth,maxBins):
+    model = DecisionTree.trainRegressor(train,{},impurity = 'variance',maxDepth = maxDepth,maxBins = maxBins)
+    preds = model.predict(test.map(lambda p:p.features))
+    actual = test.map(lambda p:p.label)
+    tp = actual.zip(preds)
+    rmsle = np.sqrt(tp.map(lambda (t,p):squared_log_error(t,p)).mean())
+    return rmsle
+
+# 深度
+params = [1,2,3,4,5,10,20]
+metrics = [evaluate_dt(train_data_dt,test_data_dt,param,32) for param in params]
+print params
+print metrics
+plt.plot(params,metrics)
+fig = matplotlib.pyplot.gcf()
+plt.show()
+
+# 最大划分数
+params = [2,4,8,16,32,64,100]
+metrics = [evaluate_dt(train_data_dt,test_data_dt,5,param) for param in params]
+print params
+print metrics
+plt.plot(params,metrics)
+fig = matplotlib.pyplot.gcf()
+plt.show()
