@@ -80,11 +80,67 @@ val scaledVectors = vectors.map(v => scaler.transform(v))
 
 // 2.训练降维模型
 // LFW数据集上运行PCA
+import org.apache.spark.mllib.linalg.Matrix
+import org.apache.spark.mllib.linalg.distributed.RowMatrix
+val matrix = new RowMatrix(scaledVectors)
+val K = 10
+val pc = matrix.computePrincipalComponents(K)
+
+// 可视化特征脸
+val rows = pc.numRows
+val cols = pc.numCols
+println(rows,cols)
+
+// 使用变量(一个MLlib)创建一个Breeze DenseMatrix
+import breeze.linalg.DenseMatrix
+val pcBreeze = new DenseMatrix(rows,cols,pc.toArray)
+
+import breeze.linalg.csvwrite
+csvwrite(new File("/home/zhb/pc.csv"),pcBreeze)
 
 // 3.使用降维模型
 // LFW数据集上使用PCA投影数据
+val projected = matrix.multiply(pc)
+println(projected.numRows,projected.numCols)
+println(projected.rows.take(5).mkString("\n"))
 
 // PCA和SVD的关系
+// SVD计算产生的右奇异值向量等同于计算得到的主城分
+val svd = matrix.computeSVD(10,computeU = true)
+println(s"U dimension : (${svd.U.numRows}, ${svd.U.numCols})")
+println(s"S dimension : (${svd.s.size})")
+println(s"V dimension : (${svd.V.numRows}, ${svd.V.numCols})")
+
+// 不考虑正负号和浮点数误差，判断两个数组是否相同
+def approxEqual(array1:Array[Double], array2:Array[Double],tolerance:Double = 1e-6) : Boolean = {
+    val bools = array1.zip(array2).map{ case (v1,v2) =>
+        if (math.abs(math.abs(v1) - math.abs(v2)) > 1e-6) false else true
+    }
+    bools.fold(true)(_&_)// 对所有的位置是否相等取与运算
+}
+println(approxEqual(Array(1.0,2.0,3.0), Array(1.0,2.0,3.0)))
+
+println(approxEqual(Array(1.0,2.0,3.0), Array(3.0,2.0,1.0)))
+
+println(approxEqual(svd.V.toArray,pc.toArray))
+
+// 矩阵U和向量S（或者对焦矩阵S）的乘积和PCA中用来把原始图像数据投影到10个主成分构成的空间中的投影矩阵相等
+val breezeS = breeze.linalg.DenseVector(svd.s.toArray)
+val projectedSVD = svd.U.rows.map {v =>
+    val breezeV = breeze.linalg.DenseVector(v.toArray)
+    val multV = breezeV :* breezeS
+    Vectors.dense(multV.data)
+}
+projected.rows.zip(projectedSVD).map{case (v1,v2) =>
+approxEqual(v1.toArray,v2.toArray)}.filter(b => true).count
 
 // 4.评价降维模型
 // LFW数据集上估计SVD的k值
+// 奇异值每次运行结果相同，并且按照递减的顺序返回
+val sValues = (1 to 5).map{ i => matrix.computeSVD(i,computeU = false).s}
+sValues.foreach(println)
+
+// 计算最大的300个奇异值，然后写入到临时CSV文件中
+val svd300 = matrix.computeSVD(300,computeU=false)
+val sMatrix = new DenseMatrix(1,300,svd300.s.toArray)
+csvwrite(new File("/home/zhb/s.csv"),sMatrix)
