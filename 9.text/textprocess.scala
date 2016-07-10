@@ -61,10 +61,10 @@ println(tokenCountsFilteredAll.distinct.count)
 def tokenize(line:String) : Seq[String] = {
     line.split(""""\W+""")
     .map(_.toLowerCase)
-    .filter(token => regex.pattern.matcher(token).matches)
-    .filterNot(token => stopWords.contains(token))
-    .filterNot(token => rareTokens.contains(token))
-    .filter(token => token.size >= 2)
+   .filter(token => regex.pattern.matcher(token).matches)
+   .filterNot(token => stopWords.contains(token))
+   .filterNot(token => rareTokens.contains(token))
+   .filter(token => token.size >= 2)
     .toSeq
 }
 println(text.flatMap(doc => tokenize(doc)).distinct.count)
@@ -119,9 +119,93 @@ println(uncommonVector.values.toSeq)
 
 // 2.使用TF-IDF模型
 // 计算文本相似度和TF-IDF特征
+val hockeyText = rdd.filter{case (file,text) => file.contains("hockey")}
+val hockeyTF = hockeyText.mapValues(doc => hashingTF.transform(tokenize(doc)))
+val hockeyTFIdf = idf.transform(hockeyTF.map(_._2))
+
+import breeze.linalg._
+val hockey1 = hockeyTFIdf.sample(true,0.1,42).first.asInstanceOf[SV]
+val breeze1 = new SparseVector(hockey1.indices,hockey1.values,hockey1.size)
+val hockey2 = hockeyTFIdf.sample(true,0.1,43).first.asInstanceOf[SV]
+val breeze2 = new SparseVector(hockey2.indices,hockey2.values,hockey2.size)
+val conineSim = breeze1.dot(breeze2) / (norm(breeze1) * norm(breeze2))
+println(conineSim)
+
+// graphics
+val graphicsText = rdd.filter{case (file,text) => file.contains("comp.graphics")}
+val graphicsTF = graphicsText.mapValues(doc => hashingTF.transform(tokenize(doc)))
+val graphicsTFIdf = idf.transform(graphicsTF.map(_._2))
+
+val graphics = graphicsTFIdf.sample(true,0.1,42).first.asInstanceOf[SV]
+val breezeGraphics = new SparseVector(graphics.indices,graphics.values,graphics.size)
+val conineSim2 = breeze1.dot(breezeGraphics) / (norm(breezeGraphics) * norm(breeze1))
+println(conineSim2)
+
+// baseball
+val baseballText = rdd.filter{case (file,text) => file.contains("baseball")}
+val baseballTF = baseballText.mapValues(doc => hashingTF.transform(tokenize(doc)))
+val baseballTFIdf = idf.transform(baseballTF.map(_._2))
+
+val baseball = baseballTFIdf.sample(true,0.1,42).first.asInstanceOf[SV]
+val breezeBaseball = new SparseVector(baseball.indices,baseball.values,baseball.size)
+val conineSim3 = breeze1.dot(breezeBaseball) / (norm(breezeBaseball) * norm(breeze1))
+println(conineSim3)
 
 // 使用TF-IDF训练文本分类器
+import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.classification.NaiveBayes
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
+
+// 抽取20个主题并把它们转换到类的映射
+val newsgroupsMap = newsgroups.distinct.collect().zipWithIndex.toMap
+val zipped = newsgroups.zip(tfidf)
+val train = zipped.map{case(topic,vector) => LabeledPoint(newsgroupsMap(topic),vector)}
+train.cache
+
+// 将RDD输入到朴素贝叶斯模型中
+val model = NaiveBayes.train(train,lambda = 0.1)
+// 在测试数据集上评估性能
+val testPath = "/home/zhb/Desktop/work/SparkData/text/20news-bydate-test/*"
+val testRDD = sc.wholeTextFiles(testPath)
+val testLabels = testRDD.map{case(file,text) =>
+    val topic = file.split("/").takeRight(2).head
+    newsgroupsMap(topic)
+}
+
+// 和训练集上相同的方法，应用tokenize方法，使用词频转换，再使用完全相同的从训练数据中
+// 计算得到的IDF，把TF向量转换为TF-IDF向量，最后，合并测试类标签和TF-IDF向量
+val testTF = testRDD.map{case (file,text) =>
+hashingTF.transform(tokenize(text)) }
+val testTFIdf = idf.transform(testTF)
+val zippedTest = testLabels.zip(testTFIdf)
+val test = zippedTest.map {case(topic,vector) =>
+LabeledPoint(topic,vector)}
+
+// 计算预测结果和模型的真实类标签，使用RDD为模型来计算准确度和多分类加权F-指标
+val predictionAndLabel = test.map(p => (model.predict(p.features),p.label))
+val accuracy = 1.0 * predictionAndLabel.filter(x => x._1 == x._2).count() / test.count()
+val metrics = new MulticlassMetrics(predictionAndLabel)
+println(accuracy)
+println(metrics.weightedFMeasure)
 
 // 3.评估文本处理技术的作用
+val rawTokens = rdd.map{case(file,text) => text.split(" ")}
+val rawTF = rawTokens.map(doc => hashingTF.transform(doc))
+val rawTrain = newsgroups.zip(rawTF).map{case(topic,vector) => LabeledPoint(newsgroupsMap(topic),vector)}
+val rawModel = NaiveBayes.train(rawTrain,lambda = 0.1)
+val rawTestTF = testRDD.map{case (file,text) => hashingTF.transform(text.split(" "))}
+val rawZippedTest = testLabels.zip(rawTestTF)
+val rawTest = rawZippedTest.map{case (topic,vector) => LabeledPoint(topic,vector)}
+val rawPredictionAndLabel = rawTest.map(p => (rawModel.predict(p.features),p.label))
+val rawAccuracy = 1.0 * rawPredictionAndLabel.filter(x => x._1 == x._2).count() / rawTest.count()
+println(rawAccuracy)
+val rawMetrics = new MulticlassMetrics(rawPredictionAndLabel)
+println(rawMetrics.weightedFMeasure)
 
 // 4.word2vec模型
+import org.apache.spark.mllib.feature.Word2Vec
+val word2vec = new Word2Vec()
+word2vec.setSeed(42)
+val word2vecModel = word2vec.fit(tokens)
+word2vecModel.findSynonyms("hockey",20).foreach(println)
+word2vecModel.findSynonyms("legislation",20).foreach(println)
